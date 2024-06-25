@@ -1030,7 +1030,6 @@ void workaround_check_unknown_cable(struct smb_charger *chg) {
 		&& (stat & APSD_DTC_STATUS_DONE_BIT)
 		&& (chg->real_charger_type == POWER_SUPPLY_TYPE_UNKNOWN)
 		&& !(chg->typec_status[3] & UFP_DFP_MODE_STATUS_BIT)
-		&& !power_supply_get_property(chg->usb_psy, POWER_SUPPLY_PROP_MOISTURE_DETECTION, &val)
 		&& (val.intval != true)) {
 		pr_debug("[W/A] CUC) APSD: 0x%02x, real_charger_type: %d\n",
 				stat, chg->real_charger_type);
