@@ -23,6 +23,17 @@
 #include <sound/wcd-dsp-mgr.h>
 #include <sound/wcd-spi.h>
 #include "wcd-spi-registers.h"
+#ifdef CONFIG_MACH_LGE
+#include <linux/wakelock.h>
+
+/* test
+#undef pr_debug
+#define pr_debug pr_err
+
+#undef dev_dbg
+#define dev_dbg dev_err
+*/
+#endif /* CONFIG_MACH_LGE */
 
 /* Byte manipulations */
 #define SHIFT_1_BYTES    (8)
@@ -159,6 +170,10 @@ struct wcd_spi_priv {
 	/* Buffers to hold memory used for transfers */
 	void *tx_buf;
 	void *rx_buf;
+#ifdef CONFIG_MACH_LGE
+    /* wake lock */
+    struct  wake_lock      wdsp_wake_lock;
+#endif /* CONFIG_MACH_LGE */
 };
 
 enum xfer_request {
@@ -678,6 +693,9 @@ static int wcd_spi_clk_ctrl(struct spi_device *spi,
 		if (flags == WCD_SPI_CLK_FLAG_DELAYED) {
 			schedule_delayed_work(&wcd_spi->clk_dwork,
 				msecs_to_jiffies(WCD_SPI_CLK_OFF_TIMER_MS));
+#ifdef CONFIG_MACH_LGE
+            wake_lock_timeout(&wcd_spi->wdsp_wake_lock, msecs_to_jiffies(WCD_SPI_CLK_OFF_TIMER_MS+100));
+#endif /* CONFIG_MACH_LGE */
 		} else {
 			ret = wcd_spi_clk_disable(spi);
 			if (IS_ERR_VALUE(ret))
@@ -707,7 +725,7 @@ static int wcd_spi_init(struct spi_device *spi)
 		goto done;
 
 	ret = wcd_spi_cmd_wr_en(spi);
-	if (IS_ERR_VALUE(ret))
+    if (IS_ERR_VALUE(ret))
 		goto err_wr_en;
 
 	/*
@@ -1404,6 +1422,9 @@ static int wcd_spi_probe(struct spi_device *spi)
 	mutex_init(&wcd_spi->clk_mutex);
 	mutex_init(&wcd_spi->xfer_mutex);
 	INIT_DELAYED_WORK(&wcd_spi->clk_dwork, wcd_spi_clk_work);
+#ifdef CONFIG_MACH_LGE
+    wake_lock_init(&wcd_spi->wdsp_wake_lock, WAKE_LOCK_SUSPEND, "wdsp_wake_lock");
+#endif /* CONFIG_MACH_LGE */
 	init_completion(&wcd_spi->resume_comp);
 
 	wcd_spi->spi = spi;

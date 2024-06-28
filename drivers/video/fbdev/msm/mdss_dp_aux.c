@@ -11,7 +11,11 @@
  *
  */
 
-#define pr_fmt(fmt)	"%s: " fmt, __func__
+#if defined(CONFIG_LGE_DISPLAY_COMMON)
+#define pr_fmt(fmt)     "[DisplayPort] %s: " fmt, __func__
+#else
+#define pr_fmt(fmt)     " %s: " fmt, __func__
+#endif
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -252,6 +256,13 @@ static int dp_aux_write_cmds(struct mdss_dp_drv_pdata *ep,
 	if (!wait_for_completion_timeout(&ep->aux_comp, HZ/4)) {
 		pr_err("aux write timeout\n");
 		ep->aux_error_num = EDP_AUX_ERR_TOUT;
+
+		if (!ep->dp_initialized) {
+			pr_err("DP not initialized\n");
+			ret = -ENODEV;
+			goto end;
+		}
+
 		/* Reset the AUX controller state machine */
 		mdss_dp_aux_reset(&ep->ctrl_io);
 	}
@@ -260,7 +271,7 @@ static int dp_aux_write_cmds(struct mdss_dp_drv_pdata *ep,
 		ret = len;
 	else
 		ret = ep->aux_error_num;
-
+end:
 	ep->aux_cmd_busy = 0;
 	mutex_unlock(&ep->aux_mutex);
 	return  ret;
@@ -309,6 +320,13 @@ static int dp_aux_read_cmds(struct mdss_dp_drv_pdata *ep,
 	if (!wait_for_completion_timeout(&ep->aux_comp, HZ/4)) {
 		pr_err("aux read timeout\n");
 		ep->aux_error_num = EDP_AUX_ERR_TOUT;
+
+		if (!ep->dp_initialized) {
+			pr_err("DP not initialized\n");
+			ret = -ENODEV;
+			goto end;
+		}
+
 		/* Reset the AUX controller state machine */
 		mdss_dp_aux_reset(&ep->ctrl_io);
 		ret = ep->aux_error_num;
@@ -411,6 +429,12 @@ retry:
 
 		if (!connected) {
 			pr_err("dp cable disconnected\n");
+			ret = -ENODEV;
+			goto end;
+		}
+
+		if (!dp->dp_initialized) {
+			pr_err("dp not initialized\n");
 			ret = -ENODEV;
 			goto end;
 		}
@@ -2554,16 +2578,18 @@ static int dp_start_link_train_2(struct mdss_dp_drv_pdata *ep)
 static int dp_link_rate_down_shift(struct mdss_dp_drv_pdata *ep)
 {
 	int ret = 0;
+	u32 link_rate = DP_LINK_RATE_162;
+	u32 max_pclk_khz = 0;
 
 	if (!ep)
 		return -EINVAL;
 
 	switch (ep->link_rate) {
 	case DP_LINK_RATE_540:
-		ep->link_rate = DP_LINK_RATE_270;
+		link_rate = DP_LINK_RATE_270;
 		break;
 	case DP_LINK_RATE_270:
-		ep->link_rate = DP_LINK_RATE_162;
+		link_rate = DP_LINK_RATE_162;
 		break;
 	case DP_LINK_RATE_162:
 	default:
@@ -2571,7 +2597,16 @@ static int dp_link_rate_down_shift(struct mdss_dp_drv_pdata *ep)
 		break;
 	};
 
-	pr_debug("new rate=%d\n", ep->link_rate);
+	max_pclk_khz = mdss_dp_calc_max_pclk_rate(ep,
+			link_rate, ep->lane_cnt);
+	max_pclk_khz *= 1000;
+	if (max_pclk_khz >= ep->pixel_rate) {
+		pr_debug("pclk is within the max pclk range\n");
+		ep->link_rate = link_rate;
+	} else {
+		pr_err("pclk is out of max pclk range\n");
+		pr_err("cannot down shift the link_rate\n");
+	}
 
 	return ret;
 }

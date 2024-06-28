@@ -10,8 +10,12 @@
  * GNU General Public License for more details.
  *
  */
+#if defined(CONFIG_LGE_DISPLAY_COMMON)
+#define pr_fmt(fmt)	"[DisplayPort] %s: " fmt, __func__
+#else
+#define pr_fmt(fmt)     " %s: " fmt, __func__
+#endif
 
-#define pr_fmt(fmt)	"%s: " fmt, __func__
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -69,6 +73,7 @@ static int mdss_dp_process_phy_test_pattern_request(
 static int mdss_dp_send_audio_notification(
 	struct mdss_dp_drv_pdata *dp, int val);
 static void mdss_dp_reset_sw_state(struct mdss_dp_drv_pdata *dp);
+static u32 mdss_dp_get_bpp(struct mdss_dp_drv_pdata *dp);
 
 static inline void mdss_dp_reset_sink_count(struct mdss_dp_drv_pdata *dp)
 {
@@ -876,6 +881,7 @@ aux_en_gpio_err:
 	return rc;
 }
 
+#ifndef CONFIG_LGE_DISPLAY_COMMON
 static int mdss_dp_config_gpios(struct mdss_dp_drv_pdata *dp, bool enable)
 {
 	int rc = 0;
@@ -927,6 +933,45 @@ static int mdss_dp_config_gpios(struct mdss_dp_drv_pdata *dp, bool enable)
 	}
 	return 0;
 }
+#else
+static int mdss_dp_config_gpios(struct mdss_dp_drv_pdata *dp, bool enable)
+{
+	if (enable == true) {
+		if (gpio_is_valid(dp->aux_sel_gpio)) {
+			int dir = 0;
+			if (gpio_is_valid(dp->usbplug_cc_gpio)) {
+				dir = gpio_get_value(dp->usbplug_cc_gpio);
+			}
+			usleep_range(1000, 1000);
+			pr_info("usbplug_cc_gpio is %d\n", dir);
+			gpio_set_value(dp->aux_sel_gpio, (dir == 0)? 0 : 1);
+		}
+		usleep_range(30000,30000);
+		if (gpio_is_valid(dp->aux_en_gpio)) {
+			gpio_set_value((dp->aux_en_gpio), 0);
+			usleep_range(1000, 1000);
+			pr_info("aux_en_gpio is 0, SBU Low, DP enabled. \n");
+		}
+	} else {
+		if (gpio_is_valid(dp->aux_en_gpio)) {
+			gpio_set_value((dp->aux_en_gpio), 1);
+			usleep_range(1000, 1000);
+			pr_info("aux_en_gpio is 1, SBU High, DP disabled\n");
+			gpio_free(dp->aux_en_gpio);
+		}
+		if (gpio_is_valid(dp->aux_sel_gpio)) {
+			gpio_set_value((dp->aux_sel_gpio), 0);
+			usleep_range(1000, 1000);
+			pr_info("aux_sel_gpio is 0, SBU already disconnection \n");
+			gpio_free(dp->aux_sel_gpio);
+		}
+		if (gpio_is_valid(dp->usbplug_cc_gpio)) {
+			gpio_free(dp->usbplug_cc_gpio);
+		}
+	}
+	return 0;
+}
+#endif
 
 static int mdss_dp_parse_gpio_params(struct platform_device *pdev,
 	struct mdss_dp_drv_pdata *dp)
@@ -1382,17 +1427,18 @@ exit:
 	return ret;
 }
 
-static u32 mdss_dp_calc_max_pclk_rate(struct mdss_dp_drv_pdata *dp)
+u32 mdss_dp_calc_max_pclk_rate(struct mdss_dp_drv_pdata *dp,
+		u32 link_rate, char lane_count)
 {
 	u32 bpp = mdss_dp_get_bpp(dp);
-	u32 max_link_rate_khz = dp->dpcd.max_link_rate *
+	u32 max_link_rate_khz = link_rate *
 		(DP_LINK_RATE_MULTIPLIER / 100);
-	u32 max_data_rate_khz = dp->dpcd.max_lane_count *
+	u32 max_data_rate_khz = lane_count *
 				max_link_rate_khz * 8 / 10;
 	u32 max_pclk_rate_khz = max_data_rate_khz / bpp;
 
-	pr_debug("bpp=%d, max_lane_cnt=%d, max_link_rate=%dKHz\n", bpp,
-		dp->dpcd.max_lane_count, max_link_rate_khz);
+	pr_debug("bpp=%d, lane_cnt=%d, max_link_rate=%dKHz\n", bpp,
+		lane_count, max_link_rate_khz);
 	pr_debug("max_data_rate=%dKHz, max_pclk_rate=%dKHz\n",
 		max_data_rate_khz, max_pclk_rate_khz);
 
@@ -1516,11 +1562,22 @@ static int mdss_dp_setup_main_link(struct mdss_dp_drv_pdata *dp, bool train)
 
 	pr_debug("enter\n");
 	mdss_dp_mainlink_ctrl(&dp->ctrl_io, true);
+#if defined(CONFIG_LGE_DISPLAY_COMMON)
+	/* commit : 04e88e68e, owner : yoonsin.woo */
+	if (dp->psm_enabled) {
+		ret = mdss_dp_aux_send_psm_request(dp, false);
+		if (ret) {
+			pr_err("Failed to exit low power mode, rc=%d\n", ret);
+			goto end;
+		}
+	}
+#else
 	ret = mdss_dp_aux_send_psm_request(dp, false);
 	if (ret) {
 		pr_err("Failed to exit low power mode, rc=%d\n", ret);
 		goto end;
 	}
+#endif
 
 	reinit_completion(&dp->video_comp);
 
@@ -1574,10 +1631,19 @@ static int mdss_dp_on_irq(struct mdss_dp_drv_pdata *dp_drv, bool lt_needed)
 	connected = dp_drv->cable_connected;
 	mutex_unlock(&dp_drv->attention_lock);
 
+#if defined(CONFIG_LGE_DISPLAY_COMMON)
+	/* commit : bb66b9a15 , owner : yoonsin.woo */
+	/* In case of handling HPD_IRQ, there can be a corner case where
+	 * the sink is turned off or the DP cable is disconnected.
+	 * Avoid turning on DP path in such cases.
+	 */
+	if (!connected || !dp_drv->alt_mode.dp_status.hpd_high) {
+#else
 	/*
 	 * If DP cable disconnected, Avoid link training or turning on DP Path
 	 */
 	if (!connected) {
+#endif
 		pr_err("DP sink not connected\n");
 		return -EINVAL;
 	}
@@ -1623,7 +1689,12 @@ static int mdss_dp_on_irq(struct mdss_dp_drv_pdata *dp_drv, bool lt_needed)
 
 		ret = mdss_dp_setup_main_link(dp_drv, lt_needed);
 		if (ret) {
+#if defined(CONFIG_LGE_DISPLAY_COMMON)
+			/* commit : bb66b9a15 , owner : yoonsin.woo */
+			if (ret == -ENODEV) {
+#else
 			if (ret == -ENODEV || ret == -EINVAL) {
+#endif
 				pr_err("main link setup failed\n");
 				mutex_unlock(&dp_drv->train_mutex);
 				return ret;
@@ -1879,6 +1950,34 @@ int mdss_dp_off(struct mdss_panel_data *pdata)
 		return mdss_dp_off_hpd(dp);
 }
 
+static int mdss_dp_send_disconnect_notification(
+		struct mdss_dp_drv_pdata *dp, int val)
+{
+	int ret = 0;
+	u32 flags = 0;
+
+	if (!dp) {
+		pr_err("invalid input\n");
+		ret = -EINVAL;
+		goto end;
+	}
+
+	flags |= MSM_EXT_DISP_HPD_ASYNC_VIDEO;
+	if (mdss_dp_sink_audio_supp(dp) || dp->audio_test_req) {
+		dp->audio_test_req = false;
+
+		flags |= MSM_EXT_DISP_HPD_AUDIO;
+	}
+
+	if (dp->ext_audio_data.intf_ops.hpd)
+		ret = dp->ext_audio_data.intf_ops.hpd(dp->ext_pdev,
+				dp->ext_audio_data.type, val, flags);
+
+end:
+	return ret;
+
+}
+
 static int mdss_dp_send_audio_notification(
 	struct mdss_dp_drv_pdata *dp, int val)
 {
@@ -1941,7 +2040,7 @@ static void mdss_dp_set_default_resolution(struct mdss_dp_drv_pdata *dp)
 static void mdss_dp_set_default_link_parameters(struct mdss_dp_drv_pdata *dp)
 {
 	const int default_max_link_rate = 0x6;
-	const int default_max_lane_count = 1;
+	const int default_max_lane_count = 4;
 
 	dp->dpcd.max_lane_count =  default_max_lane_count;
 	dp->dpcd.max_link_rate =  default_max_link_rate;
@@ -2195,13 +2294,18 @@ notify:
 		goto end;
 	}
 
+	if (connect && !dp->cable_connected) {
+		pr_warn("invalid reqeust] connected=%d, %s\n", dp->cable_connected,
+				mdss_dp_notification_status_to_string(status));
+		goto invalid_request;
+	}
+
 	atomic_set(&dp->notification_pending, 1);
 	if (connect) {
 		mdss_dp_host_init(&dp->panel_data);
 		ret = mdss_dp_send_video_notification(dp, true);
 	} else {
-		mdss_dp_send_audio_notification(dp, false);
-		ret = mdss_dp_send_video_notification(dp, false);
+		ret = mdss_dp_send_disconnect_notification(dp, false);
 	}
 
 	if (!ret) {
@@ -2269,7 +2373,8 @@ read_edid:
 		goto notify;
 	}
 
-	max_pclk_khz = mdss_dp_calc_max_pclk_rate(dp);
+	max_pclk_khz = mdss_dp_calc_max_pclk_rate(dp,
+			dp->dpcd.max_link_rate, dp->dpcd.max_lane_count);
 	hdmi_edid_set_max_pclk_rate(dp->panel_data.panel_info.edid_data,
 		min(dp->max_pclk_khz, max_pclk_khz));
 
@@ -3037,6 +3142,7 @@ static void mdss_dp_mainlink_push_idle(struct mdss_panel_data *pdata)
 		pr_err("Invalid input data\n");
 		return;
 	}
+  	pr_info("%pS",__builtin_return_address(0));
 	pr_debug("Entered++\n");
 
 	/* wait until link training is completed */
@@ -3158,8 +3264,21 @@ static int mdss_dp_event_handler(struct mdss_panel_data *pdata,
 			cancel_delayed_work_sync(&dp->hdcp_cb_work);
 
 			dp->hdcp_status = HDCP_STATE_AUTHENTICATING;
-			queue_delayed_work(dp->workq,
-				&dp->hdcp_cb_work, HZ / 2);
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+			if(dp->dpcd.max_lane_count == 2 ){
+				queue_delayed_work(dp->workq,
+						&dp->hdcp_cb_work, HZ / 2);
+				pr_info("hdcp_check lane_count = %d, 0.5s\n",dp->dpcd.max_lane_count);
+			}
+			else{
+				queue_delayed_work(dp->workq,
+						&dp->hdcp_cb_work, 3 * HZ);
+				pr_info("hdcp_check lane_count = %d, 3s\n",dp->dpcd.max_lane_count);
+			}
+#else
+  			queue_delayed_work(dp->workq,
+					&dp->hdcp_cb_work, HZ / 2);
+#endif
 		}
 		break;
 	case MDSS_EVENT_POST_PANEL_ON:
@@ -3657,6 +3776,15 @@ static void usbpd_disconnect_callback(struct usbpd_svid_handler *hdlr)
 		mdss_dp_off_hpd(dp_drv);
 	} else {
 		mdss_dp_notify_clients(dp_drv, NOTIFY_DISCONNECT);
+		if (atomic_read(&dp_drv->notification_pending)) {
+			int ret;
+			pr_debug("waiting for the disconnect to finish\n");
+			ret = wait_for_completion_timeout(&dp_drv->notification_comp, 2 * HZ);
+			if (ret <= 0) {
+				pr_warn("NOTIFY_DISCONNECT timed out\n");
+				return;
+			}
+		}
 	}
 
 	/*
@@ -4492,6 +4620,16 @@ static int mdss_dp_probe(struct platform_device *pdev)
 						ret);
 		goto probe_err;
 	}
+
+#ifdef CONFIG_LGE_DISPLAY_COMMON
+	ret = mdss_dp_request_gpios(dp_drv);
+	if (ret) {
+		pr_err("gpio request failed, ret = %d\n", ret);
+		goto probe_err;
+	}
+	mdss_dp_config_gpios(dp_drv, false);
+	mdss_dp_pinctrl_set_state(dp_drv, false);
+#endif
 
 	mdss_dp_device_register(dp_drv);
 

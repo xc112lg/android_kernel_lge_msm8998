@@ -9,8 +9,11 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  */
-
-#define pr_fmt(fmt)	"%s: " fmt, __func__
+#if defined(CONFIG_LGE_DISPLAY_COMMON)
+#define pr_fmt(fmt)	"[DisplayPort] %s: " fmt, __func__
+#else
+#define pr_fmt(fmt)     " %s: " fmt, __func__
+#endif
 
 #include <linux/slab.h>
 #include <linux/bitops.h>
@@ -274,7 +277,7 @@ static int msm_ext_disp_process_audio(struct msm_ext_disp *ext_disp,
 		goto end;
 	}
 
-	ret = wait_for_completion_timeout(&ext_disp->hpd_comp, HZ * 2);
+	ret = wait_for_completion_timeout(&ext_disp->hpd_comp, HZ * 5);
 	if (!ret) {
 		pr_err("audio timeout\n");
 		ret = -EINVAL;
@@ -296,6 +299,8 @@ static bool msm_ext_disp_validate_connect(struct msm_ext_disp *ext_disp,
 	if (ext_disp->current_disp != type)
 		return false;
 end:
+	pr_info("set current display to [%d]\n", type);
+	ext_disp->current_disp = type;
 	return true;
 }
 
@@ -379,6 +384,16 @@ static int msm_ext_disp_hpd(struct platform_device *pdev,
 		msm_ext_disp_process_audio(ext_disp, type, state, flags);
 		msm_ext_disp_update_audio_ops(ext_disp, type, state, flags);
 		msm_ext_disp_process_display(ext_disp, type, state, flags);
+
+#if defined(CONFIG_LGE_DISPLAY_COMMON)
+		if (flags & (MSM_EXT_DISP_HPD_VIDEO |MSM_EXT_DISP_HPD_ASYNC_VIDEO)){
+		    pr_info("%s, flags = %d, hpd_video =%ld, hpd_async+video =%ld\n",__func__,
+		                flags,MSM_EXT_DISP_HPD_VIDEO,MSM_EXT_DISP_HPD_ASYNC_VIDEO);
+		    ext_disp->current_disp = EXT_DISPLAY_TYPE_MAX;
+		}
+#else
+		ext_disp->current_disp = EXT_DISPLAY_TYPE_MAX;
+#endif
 	}
 
 	pr_debug("Hpd (%d) for display (%s)\n", state,

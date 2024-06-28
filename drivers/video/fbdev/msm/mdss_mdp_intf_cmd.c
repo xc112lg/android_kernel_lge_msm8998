@@ -23,6 +23,10 @@
 #include "mdss_dsi_clk.h"
 #include <linux/interrupt.h>
 
+#if defined(CONFIG_LGE_DISPLAY_COMMON)
+#include <soc/qcom/lge/board_lge.h>
+#endif
+
 #define MAX_RECOVERY_TRIALS 10
 #define MAX_SESSIONS 2
 
@@ -33,6 +37,17 @@
 #define CMD_MODE_IDLE_TIMEOUT msecs_to_jiffies(16 * 4)
 #define INPUT_EVENT_HANDLER_DELAY_USECS (16000 * 4)
 #define AUTOREFRESH_MAX_FRAME_CNT 6
+#if defined(CONFIG_LGE_DISPLAY_COMMON)
+extern int panel_not_connected;
+extern int skip_lcd_error_check;
+#endif
+
+#define LGE_FORCE_PANIC_FOR_MANUFACTURING
+
+#if defined(LGE_FORCE_PANIC_FOR_MANUFACTURING)
+#include <soc/qcom/lge/board_lge.h>
+#include <soc/qcom/lge/lge_handle_panic.h>
+#endif
 
 static DEFINE_MUTEX(cmd_clk_mtx);
 
@@ -82,6 +97,13 @@ struct mdss_mdp_cmd_ctx {
 	struct work_struct gate_clk_work;
 	struct delayed_work delayed_off_clk_work;
 	struct work_struct pp_done_work;
+#if defined(CONFIG_LGE_DISPLAY_AMBIENT_SUPPORTED)
+#if defined(CONFIG_LGE_DISPLAY_CHANGE_PARTIAL_AREA_IN_KICKOFF)
+#if defined(CONFIG_LGE_DISPLAY_BIST_MODE)
+	struct delayed_work bist_done_dw;
+#endif
+#endif
+#endif
 	struct work_struct early_wakeup_clk_work;
 	atomic_t pp_done_cnt;
 	struct completion rdptr_done;
@@ -1423,6 +1445,13 @@ static void mdss_mdp_cmd_pingpong_done(void *arg)
 		pr_err("%s: should not have pingpong interrupt!\n", __func__);
 	}
 
+#if defined(CONFIG_LGE_DISPLAY_AMBIENT_SUPPORTED)
+#if defined(CONFIG_LGE_DISPLAY_CHANGE_PARTIAL_AREA_IN_KICKOFF)
+#if defined(CONFIG_LGE_DISPLAY_BIST_MODE)
+	schedule_delayed_work(&ctx->bist_done_dw, msecs_to_jiffies(34));
+#endif
+#endif
+#endif
 	pr_debug("%s: ctl_num=%d intf_num=%d ctx=%d cnt=%d\n", __func__,
 			ctl->num, ctl->intf_num, ctx->current_pp_num,
 			atomic_read(&ctx->koff_cnt));
@@ -1617,6 +1646,28 @@ static int mdss_mdp_cmd_update_lineptr(struct mdss_mdp_ctl *ctl, bool enable)
 
 	return 0;
 }
+
+#if defined(CONFIG_LGE_DISPLAY_AMBIENT_SUPPORTED)
+#if defined(CONFIG_LGE_DISPLAY_CHANGE_PARTIAL_AREA_IN_KICKOFF)
+#if defined(CONFIG_LGE_DISPLAY_BIST_MODE)
+static void bist_done_work(struct work_struct *work)
+{
+	struct delayed_work *dw = to_delayed_work(work);
+	struct mdss_mdp_cmd_ctx *ctx = container_of(dw,
+		struct mdss_mdp_cmd_ctx, bist_done_dw);
+	struct mdss_mdp_ctl *ctl = ctx->ctl;
+
+	if (ctl) {
+		if (mdss_panel_is_power_on_lp(ctx->panel_power_state)) {
+			mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_PANEL_BIST_OFF,
+						(void *)(long int) ctx->panel_power_state,
+						CTL_INTF_EVENT_FLAG_DEFAULT);
+		}
+	}
+}
+#endif /* CONFIG_LGE_DISPLAY_BIST_MODE */
+#endif /* CONFIG_LGE_DISPLAY_CHANGE_PARTIAL_AREA_IN_KICKOFF */
+#endif /* CONFIG_LGE_DISPLAY_AMBIENT_SUPPORTED */
 
 static void pingpong_done_work(struct work_struct *work)
 {
@@ -2149,7 +2200,11 @@ static int mdss_mdp_cmd_wait4pingpong(struct mdss_mdp_ctl *ctl, void *arg)
 		rc = atomic_read(&ctx->koff_cnt) == 0;
 	}
 
+#if defined(CONFIG_LGE_DISPLAY_COMMON)
+	if (rc <= 0 && !panel_not_connected) {
+#else
 	if (rc <= 0) {
+#endif
 		pr_err("%s:wait4pingpong timed out ctl=%d rc=%d cnt=%d koff_cnt=%d\n",
 				__func__,
 				ctl->num, rc, ctx->pp_timeout_report_cnt,
@@ -2163,6 +2218,14 @@ static int mdss_mdp_cmd_wait4pingpong(struct mdss_mdp_ctl *ctl, void *arg)
 
 		reinit_completion(&pdata->te_done);
 		rc = wait_for_completion_timeout(&pdata->te_done, KOFF_TIMEOUT);
+
+#if defined(LGE_FORCE_PANIC_FOR_MANUFACTURING)
+		if (lge_get_boot_mode() == LGE_BOOT_MODE_MINIOS) {
+			pr_err("PANIC : support to manufacturing request");
+			lge_set_subsys_crash_reason("mdss", LGE_SUB_MDSS);
+			panic("POLED connector check");
+		}
+#endif
 
 		if (!rc) {
 			MDSS_XLOG(0xbac);
@@ -2338,7 +2401,12 @@ static int mdss_mdp_cmd_panel_on(struct mdss_mdp_ctl *ctl,
 
 		}
 
+#if defined(CONFIG_LGE_DISPLAY_COMMON)
+		if (!skip_lcd_error_check)
+			rc = mdss_mdp_tearcheck_enable(ctl, true);
+#else
 		rc = mdss_mdp_tearcheck_enable(ctl, true);
+#endif
 		WARN(rc, "intf %d tearcheck enable error (%d)\n",
 				ctl->intf_num, rc);
 
@@ -3153,6 +3221,21 @@ static int mdss_mdp_cmd_kickoff(struct mdss_mdp_ctl *ctl, void *arg)
 		mdss_mdp_cmd_wait4_autorefresh_done(ctl);
 
 	mb();
+
+#if defined(CONFIG_LGE_DISPLAY_AMBIENT_SUPPORTED)
+#if defined(CONFIG_LGE_DISPLAY_CHANGE_PARTIAL_AREA_IN_KICKOFF)
+	mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_PANEL_CHANGE_PARTIAL_AREA,
+				(void *)(long int) ctx->panel_power_state,
+				CTL_INTF_EVENT_FLAG_DEFAULT);
+#endif
+#endif
+
+
+#if defined(CONFIG_LGE_MIPI_JOAN_ONCELL_QHD_CMD_PANEL)
+	mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_POST_PANEL_ON, NULL,
+				CTL_INTF_EVENT_FLAG_DEFAULT);
+#endif
+
 	mutex_unlock(&ctx->autorefresh_lock);
 
 	MDSS_XLOG(ctl->num, ctx->current_pp_num,
@@ -3247,7 +3330,13 @@ int mdss_mdp_cmd_ctx_stop(struct mdss_mdp_ctl *ctl,
 	mdss_mdp_resource_control(ctl, MDP_RSRC_CTL_EVENT_STOP);
 
 	flush_work(&ctx->pp_done_work);
-
+#if defined(CONFIG_LGE_DISPLAY_AMBIENT_SUPPORTED)
+#if defined(CONFIG_LGE_DISPLAY_CHANGE_PARTIAL_AREA_IN_KICKOFF)
+#if defined(CONFIG_LGE_DISPLAY_BIST_MODE)
+	flush_delayed_work(&ctx->bist_done_dw);
+#endif
+#endif
+#endif
 	if (mdss_panel_is_power_off(panel_power_state) ||
 	    mdss_panel_is_power_on_ulp(panel_power_state))
 		mdss_mdp_tearcheck_enable(ctl, false);
@@ -3405,6 +3494,13 @@ int mdss_mdp_cmd_stop(struct mdss_mdp_ctl *ctl, int panel_power_state)
 			 */
 			pr_debug("%s: turn off clocks\n", __func__);
 			turn_off_clocks = true;
+
+#if defined(CONFIG_LGE_DISPLAY_AMBIENT_SUPPORTED)
+			ret = mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_PANEL_LP_TO_ULP_MODE,
+							(void *)(long int)panel_power_state,
+							CTL_INTF_EVENT_FLAG_DEFAULT);
+			WARN(ret, "intf %d DOZE to DOZE-SUSPEND error(%d)\n", ctl->intf_num, ret);
+#endif
 		} else {
 			/*
 			 * Transition from ultra low power to low power does
@@ -3427,6 +3523,13 @@ int mdss_mdp_cmd_stop(struct mdss_mdp_ctl *ctl, int panel_power_state)
 				MDSS_EVENT_REGISTER_CLAMP_HANDLER,
 				(void *)&ctx->intf_clamp_handler,
 				CTL_INTF_EVENT_FLAG_DEFAULT);
+
+#if defined(CONFIG_LGE_DISPLAY_AMBIENT_SUPPORTED)
+			ret = mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_PANEL_ULP_TO_LP_MODE,
+							(void *)(long int)panel_power_state,
+							CTL_INTF_EVENT_FLAG_DEFAULT);
+			WARN(ret, "intf %d DOZE to DOZE-SUSPEND error(%d)\n", ctl->intf_num, ret);
+#endif
 
 			mdss_mdp_tearcheck_enable(ctl, true);
 
@@ -3610,6 +3713,13 @@ static int mdss_mdp_cmd_ctx_setup(struct mdss_mdp_ctl *ctl,
 	INIT_DELAYED_WORK(&ctx->delayed_off_clk_work,
 		clk_ctrl_delayed_off_work);
 	INIT_WORK(&ctx->pp_done_work, pingpong_done_work);
+#if defined(CONFIG_LGE_DISPLAY_AMBIENT_SUPPORTED)
+#if defined(CONFIG_LGE_DISPLAY_CHANGE_PARTIAL_AREA_IN_KICKOFF)
+#if defined(CONFIG_LGE_DISPLAY_BIST_MODE)
+	INIT_DELAYED_WORK(&ctx->bist_done_dw, bist_done_work);
+#endif
+#endif
+#endif
 	INIT_WORK(&ctx->early_wakeup_clk_work, early_wakeup_work);
 	atomic_set(&ctx->pp_done_cnt, 0);
 	ctx->autorefresh_state = MDP_AUTOREFRESH_OFF;

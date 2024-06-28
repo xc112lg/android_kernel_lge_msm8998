@@ -738,4 +738,9 @@ int q6asm_adjust_session_clock(struct audio_client *ac,
 		uint32_t adjust_time_lsw,
 		uint32_t adjust_time_msw);
 int q6asm_get_svc_version(uint32_t service_id);
+
+//MQA
+int q6asm_set_lgmqa_param_one(struct audio_client *ac, int cmd, int val);
+int q6asm_set_lgmqa_param_properties(struct audio_client *ac, long *val);
+
 #endif /* __Q6_ASM_H__ */

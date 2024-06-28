@@ -1181,6 +1181,8 @@ void mdss_dp_aux_init(struct mdss_dp_drv_pdata *ep);
 void mdss_dp_fill_link_cfg(struct mdss_dp_drv_pdata *ep);
 void mdss_dp_lane_power_ctrl(struct mdss_dp_drv_pdata *ep, int up);
 void mdss_dp_config_ctrl(struct mdss_dp_drv_pdata *ep);
+u32 mdss_dp_calc_max_pclk_rate(struct mdss_dp_drv_pdata *dp,
+		u32 link_rate, char lane_count);
 char mdss_dp_gen_link_clk(struct mdss_dp_drv_pdata *dp);
 int mdss_dp_aux_send_psm_request(struct mdss_dp_drv_pdata *dp, bool enable);
 void mdss_dp_aux_send_test_response(struct mdss_dp_drv_pdata *ep);

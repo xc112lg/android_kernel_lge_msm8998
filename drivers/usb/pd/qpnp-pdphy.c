@@ -112,6 +112,9 @@ struct usb_pdphy {
 	int tx_status;
 	u8 frame_filter_val;
 	bool in_test_data_mode;
+#ifndef CONFIG_LGE_USB
+	bool rx_busy;
+#endif
 
 	enum data_role data_role;
 	enum power_role power_role;
@@ -731,6 +734,9 @@ static irqreturn_t pdphy_msg_rx_irq(int irq, void *data)
 		false);
 	pdphy->rx_bytes += size + 1;
 done:
+#ifndef CONFIG_LGE_USB
+	pdphy->rx_busy = false;
+#endif
 	return IRQ_HANDLED;
 }
 

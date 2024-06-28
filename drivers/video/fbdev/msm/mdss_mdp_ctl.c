@@ -27,6 +27,9 @@
 #include "mdss_mdp.h"
 #include "mdss_mdp_trace.h"
 #include "mdss_debug.h"
+#if defined(CONFIG_LGE_INTERVAL_MONITOR)
+#include "lge/lge_interval_monitor.h"
+#endif
 
 #define MDSS_MDP_QSEED3_VER_DOWNSCALE_LIM 2
 #define NUM_MIXERCFG_REGS 3
@@ -6131,6 +6134,11 @@ int mdss_mdp_display_commit(struct mdss_mdp_ctl *ctl, void *arg,
 	ctl->play_cnt++;
 	ATRACE_END("flush_kickoff");
 
+#if defined(CONFIG_LGE_INTERVAL_MONITOR)
+	if (arg == NULL) {
+		lge_interval_notify(ktime_get());
+	}
+#endif
 done:
 	mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_OFF);
 
