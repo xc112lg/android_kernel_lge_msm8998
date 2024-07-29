@@ -399,7 +399,7 @@ static int  lge_is_fg_charging(struct fg_chip *chip)
 
 	if (!power_supply_get_property(chip->batt_psy,
 					POWER_SUPPLY_PROP_CURRENT_NOW, &val)) {
-		if (val.intval < -25000 )
+		if (val.intval > 25000 )
 			return LGE_FG_CHARGING;
 		else
 			return LGE_FG_DISCHARGING;
