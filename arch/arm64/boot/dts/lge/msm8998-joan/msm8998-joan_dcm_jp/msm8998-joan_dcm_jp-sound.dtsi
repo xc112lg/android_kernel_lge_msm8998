@@ -15,4 +15,4 @@
 &lge_sound_tavil {
 	/delete-property/ lge,msm-mbhc-extn-cable;
 	lge,msm-mbhc-extn-cable = <1>;
-}
+};
